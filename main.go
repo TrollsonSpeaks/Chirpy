@@ -17,17 +17,27 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) adminMetricsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	hitCount := int(cfg.fileserverHits.Load())
+	
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())))
+	w.Write([]byte(fmt.Sprintf(`
+		<html>
+			<body>
+				<h1>Welcome, Chirpy Admin</h1>
+				<p>Chirpy has been visited %d times!</p>
+			</body>
+		</html>
+		`, hitCount)))
 }
 
-func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) adminResetHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -59,8 +69,8 @@ func main() {
 	
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("./assets"))))	
 
-	mux.HandleFunc("/api/metrics", apiCfg.metricsHandler)
-	mux.HandleFunc("/api/reset", apiCfg.resetHandler)
+	mux.HandleFunc("/admin/metrics", apiCfg.adminMetricsHandler)
+	mux.HandleFunc("/admin/reset", apiCfg.adminResetHandler)
 
 	server := &http.Server{
 		Addr:     ":8080",
