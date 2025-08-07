@@ -5,15 +5,16 @@ import (
 )
 
 func main() {
-	// Step 1: Create a new ServeMux
 	mux := http.NewServeMux()
 
-	// Step 2: Create the server and attach the mux
+	fileServer := http.FileServer(http.Dir("."))
+
+	mux.Handle("/", fileServer)
+
 	server := &http.Server{
-		Addr:    ":8080", // Listen on port 8080
-		Handler: mux,     // Use the ServeMux as the handler
+		Addr:     ":8080",
+		Handler:  mux,
 	}
 
-	// Step 3: Start the server
 	server.ListenAndServe()
 }
