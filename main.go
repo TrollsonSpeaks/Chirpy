@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"fmt"
+	"strings"
 )
 
 type apiConfig struct {
@@ -68,38 +69,56 @@ func (cfg *apiConfig) validateChirpHandler(w http.ResponseWriter, r  *http.Reque
 		Body string `json:"body"`
 	}
 
-	type errorResponse struct {
-		Error string `json:"error"`
+	type responseBody struct {
+		CleanedBody string `json:"cleaned_body"`
 	}
 
-	type successResponse struct {
-		Valid bool `json:"valid"`
-	}
-
-	// Decode the JSON body
 	decoder := json.NewDecoder(r.Body)
 	defer r.Body.Close()
 
 	var req requestBody
 	if err := decoder.Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		resp, _ := json.Marshal(errorResponse{Error: "Something went wrong"})
-		w.Write(resp)
+		respondWithError(w, http.StatusBadRequest, "Something went wrong")
 		return
 	}
 
-	// Validate chirp length
 	if len(req.Body) > 140 {
-		w.WriteHeader(http.StatusBadRequest)
-		resp, _ := json.Marshal(errorResponse{Error: "Chirp is too long"})
-		w.Write(resp)
+		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 		return
 	}
 
-	// Success
-	w.WriteHeader(http.StatusOK)
-	resp, _ := json.Marshal(successResponse{Valid: true})
-	w.Write(resp)
+	cleaned := filterProfanity(req.Body)
+
+	respondWithJSON(w, http.StatusOK, responseBody{CleanedBody: cleaned})
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": msg,
+	})
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(payload)
+}
+
+func filterProfanity(body string) string {
+	profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
+
+	words := strings.Split(body, " ")
+
+	for i, word := range words {
+		for _, bad := range profaneWords {
+			if strings.ToLower(word) == bad {
+				words[i] = "****"
+				break
+			}
+		}
+	}
+
+	return strings.Join(words, " ")
 }
 
 func main() {
