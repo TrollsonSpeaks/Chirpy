@@ -208,6 +208,43 @@ func filterProfanity(body string) string {
 	return strings.Join(words, " ")
 }
 
+func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	dbChirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
+		return
+	}
+
+	chirps := []Chirp{}
+	for _, c := range dbChirps {
+		chirps = append(chirps, Chirp{
+			ID:         c.ID,
+			CreatedAt:  c.CreatedAt,
+			UpdatedAt:  c.UpdatedAt,
+			Body:       c.Body,
+			UserID:     c.UserID.UUID,
+		})
+	}
+
+	respondWithJSON(w, http.StatusOK, chirps)
+}
+
+func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		cfg.createChirpHandler(w, r)
+	case http.MethodGet:
+		cfg.getChirpsHandler(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)	
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -233,7 +270,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/healthz", readinessHandler)
-	mux.HandleFunc("/api/chirps", apiCfg.createChirpHandler)
+	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
 
 	fileServer := http.FileServer(http.Dir("."))
