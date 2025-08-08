@@ -30,6 +30,14 @@ type User struct {
 	Email      string    `json:"email"`
 }
 
+type Chirp struct {
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Body         string    `json:"body"`
+	UserID       uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -125,26 +133,20 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-func (cfg *apiConfig) validateChirpHandler(w http.ResponseWriter, r  *http.Request) {
+func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
 	type requestBody struct {
-		Body string `json:"body"`
+		Body   string      `json:"body"`
+		UserID uuid.UUID   `json:"user_id"`
 	}
-
-	type responseBody struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	defer r.Body.Close()
 
 	var req requestBody
-	if err := decoder.Decode(&req); err != nil {
-		respondWithError(w, http.StatusBadRequest, "Something went wrong")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
@@ -153,9 +155,28 @@ func (cfg *apiConfig) validateChirpHandler(w http.ResponseWriter, r  *http.Reque
 		return
 	}
 
-	cleaned := filterProfanity(req.Body)
+	cleanedBody := filterProfanity(req.Body)
 
-	respondWithJSON(w, http.StatusOK, responseBody{CleanedBody: cleaned})
+	dbChirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:     cleanedBody,
+		UserID:   uuid.NullUUID{UUID: req.UserID, Valid: true},
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create chirp")
+		return
+	}
+
+	chirp := Chirp{
+		ID:         dbChirp.ID,
+		CreatedAt:  dbChirp.CreatedAt,
+		UpdatedAt:  dbChirp.UpdatedAt,
+		Body:       dbChirp.Body,
+		UserID:     dbChirp.UserID.UUID,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(chirp)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -212,7 +233,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/healthz", readinessHandler)
-	mux.HandleFunc("/api/validate_chirp", apiCfg.validateChirpHandler)
+	mux.HandleFunc("/api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
 
 	fileServer := http.FileServer(http.Dir("."))
