@@ -1,0 +1,15 @@
+# Secrets
+.env
+
+# Executables
+out
+
+# SQLC generated code (optional)
+internal/database/
+
+# OS files
+.DS_Store
+
+# Editor files
+*.swp
+*.swo

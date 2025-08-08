@@ -1,15 +1,33 @@
 package main
 
+import _ "github.com/lib/pq"
+
 import (
+	"os"
+	"log"
+	"database/sql"
+	"github.com/joho/godotenv"
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"fmt"
 	"strings"
+	"chirpy/internal/database"
+	"time"
+	"github.com/google/uuid"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
+}
+
+type User struct {
+	ID         uuid.UUID `json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Email      string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -44,9 +62,57 @@ func (cfg *apiConfig) adminResetHandler(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	cfg.fileserverHits.Store(0)
+
+	if cfg.platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("Forbidden outside of dev environment"))
+		return
+	}
+
+	err := cfg.db.DeleteAllUsers(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete users")
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Hits counter reset to 0"))
+	w.Write([]byte("All users deleted"))
+}
+
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	type requestBody struct {
+		Email string `json:"email"`
+	}
+
+	var req requestBody
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil || req.Email == "" {
+		respondWithError(w, http.StatusBadRequest, "Invalid email input")
+		return
+	}
+
+	dbUser, err := cfg.db.CreateUser(r.Context(), req.Email)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not create user")
+		return
+	}
+
+	// map to local User struct
+	user := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
 }
 
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
@@ -122,12 +188,32 @@ func filterProfanity(body string) string {
 }
 
 func main() {
-	mux := http.NewServeMux()
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 
-	apiCfg := apiConfig{}
+	dbURL := os.Getenv("DB_URL")
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal("Cannot connect to database:", err)
+	}
+
+	dbQueries := database.New(db)
+
+	platform := os.Getenv("PLATFORM")
+	
+	apiCfg := apiConfig{
+		db:       dbQueries,	
+		platform: platform,
+	}
+
+	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/healthz", readinessHandler)
 	mux.HandleFunc("/api/validate_chirp", apiCfg.validateChirpHandler)
+	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
 
 	fileServer := http.FileServer(http.Dir("."))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", fileServer)))
