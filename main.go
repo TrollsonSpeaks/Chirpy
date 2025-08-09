@@ -15,6 +15,7 @@ import (
 	"chirpy/internal/database"
 	"time"
 	"github.com/google/uuid"
+	"errors"
 )
 
 type apiConfig struct {
@@ -245,6 +246,41 @@ func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (cfg *apiConfig) getChirpByIDHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	idStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(idStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "invalid chirp id")
+		return
+	}
+
+	dbChirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		respondWithError(w, http.StatusInternalServerError, "failed to fetch chirp")
+		return
+	}
+
+	chirp := Chirp{
+		ID:          dbChirp.ID,
+		CreatedAt:   dbChirp.CreatedAt,
+		UpdatedAt:   dbChirp.UpdatedAt,
+		Body:        dbChirp.Body,
+		UserID:      dbChirp.UserID.UUID,
+	}
+
+	respondWithJSON(w, http.StatusOK, chirp)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -272,6 +308,7 @@ func main() {
 	mux.HandleFunc("/api/healthz", readinessHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpByIDHandler)
 
 	fileServer := http.FileServer(http.Dir("."))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", fileServer)))
