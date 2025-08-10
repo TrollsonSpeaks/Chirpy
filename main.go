@@ -16,6 +16,7 @@ import (
 	"time"
 	"github.com/google/uuid"
 	"errors"
+	"chirpy/internal/auth"
 )
 
 type apiConfig struct {
@@ -37,6 +38,82 @@ type Chirp struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	Body         string    `json:"body"`
 	UserID       uuid.UUID `json:"user_id"`
+}
+
+type createUserRequest struct {
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+}
+
+func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var req createUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	hashed, err := auth.HashPassword(req.Password)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:             req.Email,
+		HashedPassword:    hashed,
+	})
+	if err != nil {
+		http.Error(w, "Error creating user", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(struct {
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+	}{
+		ID:         user.ID,
+		CreatedAt:  user.CreatedAt,
+		UpdatedAt:  user.UpdatedAt,
+		Email:      user.Email,
+	})
+}
+
+type loginRequest struct {
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+}
+
+func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	user, err := cfg.db.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	if err := auth.CheckPasswordHash(req.Password, user.HashedPassword); err != nil {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	json.NewEncoder(w).Encode(struct {
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+	}{
+		ID:         user.ID,
+		CreatedAt:  user.CreatedAt,
+		UpdatedAt:  user.UpdatedAt,
+		Email:      user.Email,
+	})
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -95,7 +172,8 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	type requestBody struct {
-		Email string `json:"email"`
+		Email          string `json:"email"`
+		Password       string `json:"password"`
 	}
 
 	var req requestBody
@@ -105,13 +183,21 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dbUser, err := cfg.db.CreateUser(r.Context(), req.Email)
+	hashed, err := auth.HashPassword(req.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not hash password")
+		return
+	}
+
+	dbUser, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          req.Email,
+		HashedPassword: hashed,
+	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not create user")
 		return
 	}
 
-	// map to local User struct
 	user := User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
@@ -121,7 +207,7 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(user)
+	_ = json.NewEncoder(w).Encode(user)
 }
 
 func readinessHandler(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +221,7 @@ func readinessHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost { 
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -300,7 +386,7 @@ func main() {
 	
 	apiCfg := apiConfig{
 		db:       dbQueries,	
-		platform: platform,
+		platform:     platform,
 	}
 
 	mux := http.NewServeMux()
@@ -308,6 +394,7 @@ func main() {
 	mux.HandleFunc("/api/healthz", readinessHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("/api/login", apiCfg.handleLogin)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpByIDHandler)
 
 	fileServer := http.FileServer(http.Dir("."))
