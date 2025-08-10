@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 type User struct {
@@ -81,8 +82,9 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginRequest struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
+	Email             string `json:"email"`
+	Password          string `json:"password"`
+	ExpiresInSeconds  *int   `json:"expires_in_seconds,omitempty"`
 }
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -103,16 +105,38 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	const defaultExpirationSeconds = 3600
+	const maxExpirationSeconds = 3600
+
+	expirationSeconds := defaultExpirationSeconds
+
+	if req.ExpiresInSeconds!= nil {
+		clientExpiration := *req.ExpiresInSeconds
+		if clientExpiration > 0 && clientExpiration <= maxExpirationSeconds {
+			expirationSeconds = clientExpiration
+		}
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Duration(expirationSeconds)*time.Second)
+	if err != nil {
+		http.Error(w, "Failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
 	json.NewEncoder(w).Encode(struct {
 		ID          uuid.UUID `json:"id"`
 		CreatedAt   time.Time `json:"created_at"`
 		UpdatedAt   time.Time `json:"updated_at"`
 		Email       string    `json:"email"`
+		Token       string    `json:"token"`
 	}{
 		ID:         user.ID,
 		CreatedAt:  user.CreatedAt,
 		UpdatedAt:  user.UpdatedAt,
 		Email:      user.Email,
+		Token:      token,
 	})
 }
 
@@ -226,9 +250,20 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Missing or invalid authorization header")
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Invalid token")
+		return
+	}
+
 	type requestBody struct {
 		Body   string      `json:"body"`
-		UserID uuid.UUID   `json:"user_id"`
 	}
 
 	var req requestBody
@@ -246,7 +281,7 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 
 	dbChirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 		Body:     cleanedBody,
-		UserID:   uuid.NullUUID{UUID: req.UserID, Valid: true},
+		UserID:   uuid.NullUUID{UUID: userID, Valid: true},
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create chirp")
@@ -383,10 +418,16 @@ func main() {
 	dbQueries := database.New(db)
 
 	platform := os.Getenv("PLATFORM")
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is not set")
+	}
 	
 	apiCfg := apiConfig{
-		db:       dbQueries,	
-		platform:     platform,
+		db:         dbQueries,	
+		platform:   platform,
+		jwtSecret:  jwtSecret,
 	}
 
 	mux := http.NewServeMux()
