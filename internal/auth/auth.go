@@ -12,6 +12,24 @@ import (
 	"encoding/hex"
 )
 
+func GetAPIKey(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("no authorization header found")
+	}
+
+	parts := strings.Fields(authHeader)
+	if len(parts) != 2 {
+		return "", errors.New("malformed authorization header")
+	}
+
+	if parts[0] != "ApiKey" {
+		return "", errors.New("authorization header must start with 'ApiKey'")
+	}
+
+	return parts[1], nil
+}
+
 func MakeRefreshToken() (string, error) {
 	randomBytes := make([]byte, 32)
 

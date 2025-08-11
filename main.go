@@ -24,6 +24,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 type User struct {
@@ -53,6 +54,17 @@ func (cfg *apiConfig) handlePolkaWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		http.Error(w, "Missing or invalid API key", http.StatusUnauthorized)
+		return
+	}
+
+	if apiKey != cfg.polkaKey {
+		http.Error(w, "Invalid API key", http.StatusUnauthorized)
+		return
+	}
+
 	type webhookRequest struct {
 		Event   string `json:"event"`
 		Data    struct {
@@ -71,7 +83,7 @@ func (cfg *apiConfig) handlePolkaWebhook(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	err := cfg.db.UpgradeUserToChirpyRed(r.Context(), req.Data.UserID)
+	err = cfg.db.UpgradeUserToChirpyRed(r.Context(), req.Data.UserID)
 	if err != nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
@@ -676,11 +688,17 @@ func main() {
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET environment variable is not set")
 	}
+
+	polkaKey := os.Getenv("POLKA_KEY")
+	if polkaKey == "" {
+		log.Fatal("POLKA_KEY environment variable is not set")
+	}
 	
 	apiCfg := apiConfig{
 		db:         dbQueries,	
 		platform:   platform,
 		jwtSecret:  jwtSecret,
+		polkaKey:   polkaKey,
 	}
 
 	mux := http.NewServeMux()
