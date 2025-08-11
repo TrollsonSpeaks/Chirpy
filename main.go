@@ -528,7 +528,47 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbChirps, err := cfg.db.GetChirps(r.Context())
+	authorIDStr := r.URL.Query().Get("author_id")
+
+	var chirps []database.Chirp
+	var err error
+
+	if authorIDStr != "" {
+		authorID, err := uuid.Parse(authorIDStr)
+		if err != nil {
+			http.Error(w, "Invalid author_id format", http.StatusBadRequest)
+			return
+		}
+
+		chirps, err = cfg.db.GetChirpsByAuthor(r.Context(), uuid.NullUUID{
+			UUID:    authorID,
+			Valid:   true,
+		})
+	} else {
+		chirps, err = cfg.db.GetChirps(r.Context())
+	}
+
+	if err != nil {
+		http.Error(w, "Failed to retrieve chirps", http.StatusInternalServerError)
+		return
+	}
+
+	responseChirps := make([]Chirp, len(chirps))
+	for i, chirp := range chirps {
+		responseChirps[i] = Chirp{
+			ID:         chirp.ID,
+			CreatedAt:  chirp.CreatedAt,
+			UpdatedAt:  chirp.UpdatedAt,
+			Body:       chirp.Body,
+			UserID:     chirp.UserID.UUID,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responseChirps)
+}
+
+/*	dbChirps, err := cfg.db.GetChirps(r.Context())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to fetch chirps")
 		return
@@ -546,7 +586,7 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusOK, chirps)
-}
+}	*/
 
 func (cfg *apiConfig) chirpsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -704,7 +744,17 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/healthz", readinessHandler)
-	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
+	mux.HandleFunc("/api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			apiCfg.getChirpsHandler(w, r)
+		case http.MethodPost:
+			apiCfg.createChirpHandler(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	
 	mux.HandleFunc("/api/users", apiCfg.usersHandler)
 	mux.HandleFunc("/api/refresh", apiCfg.handleRefresh)
 	mux.HandleFunc("/api/revoke", apiCfg.handleRevoke)
