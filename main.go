@@ -497,6 +497,77 @@ func (cfg *apiConfig) getChirpByIDHandler(w http.ResponseWriter, r *http.Request
 	respondWithJSON(w, http.StatusOK, chirp)
 }
 
+func (cfg *apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "Missing or invalid authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	type updateUserRequest struct {
+		Email        string `json:"email"`
+		Password     string `json:"password"`
+	}
+
+	var req updateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		http.Error(w, "Failed to has password", http.StatusInternalServerError)
+		return
+	}
+
+	updatedUser, err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+		ID:             userID,
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	})
+	if err != nil {
+		http.Error(w, "Failed to update user", http.StatusInternalServerError)
+	return
+	}
+
+	w.Header().Set("content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(struct {
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+	}{
+		ID:         updatedUser.ID,
+		CreatedAt:  updatedUser.CreatedAt,
+		UpdatedAt:  updatedUser.UpdatedAt,
+		Email:      updatedUser.Email,
+	})
+}
+
+func (cfg *apiConfig) usersHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		cfg.createUserHandler(w, r)
+	case http.MethodPut:
+		cfg.updateUserHandler(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -529,7 +600,7 @@ func main() {
 
 	mux.HandleFunc("/api/healthz", readinessHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
-	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("/api/users", apiCfg.usersHandler)
 	mux.HandleFunc("/api/refresh", apiCfg.handleRefresh)
 	mux.HandleFunc("/api/revoke", apiCfg.handleRevoke)
 	mux.HandleFunc("/api/login", apiCfg.handleLogin)
