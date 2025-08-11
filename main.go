@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"errors"
 	"chirpy/internal/auth"
+	"sort"
 )
 
 type apiConfig struct {
@@ -563,6 +564,15 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 			UserID:     chirp.UserID.UUID,
 		}
 	}
+
+	sortParam := r.URL.Query().Get("sort")
+
+	sort.Slice(responseChirps, func(i, j int) bool {
+		if sortParam == "desc" {
+			return responseChirps[i].CreatedAt.After(responseChirps[j].CreatedAt)
+		}
+		return responseChirps[i].CreatedAt.Before(responseChirps[j].CreatedAt)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(responseChirps)
