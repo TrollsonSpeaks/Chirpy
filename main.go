@@ -84,7 +84,7 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 type loginRequest struct {
 	Email             string `json:"email"`
 	Password          string `json:"password"`
-	ExpiresInSeconds  *int   `json:"expires_in_seconds,omitempty"`
+	//	ExpiresInSeconds  *int   `json:"expires_in_seconds,omitempty"`
 }
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +105,49 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accessToken, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Hour)
+	if err != nil {
+		http.Error(w, "Failed to create access token", http.StatusInternalServerError)
+		return
+	}
+
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		http.Error(w, "Failed to create refresh token", http.StatusInternalServerError)
+		return
+	}
+
+	expiresAt := time.Now().Add(60 * 24 * time.Hour)
+	_, err = cfg.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:         refreshToken,
+		UserID:        user.ID,
+		ExpiresAt:     expiresAt,
+	})
+	if err != nil {
+		http.Error(w, "Failed to store refresh token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		ID            uuid.UUID `json:"id"`
+		CreatedAt     time.Time  `json:"created_at"`
+		UpdatedAt     time.Time `json:"updated_at"`
+		Email         string    `json:"email"`
+		Token         string    `json:"token"`
+		RefreshToken  string    `json:"refresh_token"`
+	}{
+		ID:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        accessToken,
+		RefreshToken: refreshToken,
+	})
+}
+
+	/*
+
 	const defaultExpirationSeconds = 3600
 	const maxExpirationSeconds = 3600
 
@@ -124,7 +167,6 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-
 	json.NewEncoder(w).Encode(struct {
 		ID          uuid.UUID `json:"id"`
 		CreatedAt   time.Time `json:"created_at"`
@@ -137,6 +179,59 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:  user.UpdatedAt,
 		Email:      user.Email,
 		Token:      token,
+	})
+} */
+
+func (cfg *apiConfig) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "Missing or invalid authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	err = cfg.db.RevokeRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		http.Error(w, "Failed to revoke token", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "Missing or invalid authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	user, err := cfg.db.GetUserFromRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		http.Error(w, "Invalid or expired refreshed token", http.StatusUnauthorized)
+		return
+	}
+
+	accessToken, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Hour)
+	if err != nil {
+		http.Error(w, "Failed to create access token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Token string `json:"token"`
+	}{
+		Token: accessToken,
 	})
 }
 
@@ -435,6 +530,8 @@ func main() {
 	mux.HandleFunc("/api/healthz", readinessHandler)
 	mux.HandleFunc("/api/chirps", apiCfg.chirpsHandler)
 	mux.HandleFunc("/api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("/api/refresh", apiCfg.handleRefresh)
+	mux.HandleFunc("/api/revoke", apiCfg.handleRevoke)
 	mux.HandleFunc("/api/login", apiCfg.handleLogin)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpByIDHandler)
 

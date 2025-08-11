@@ -8,7 +8,20 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"crypto/rand"
+	"encoding/hex"
 )
+
+func MakeRefreshToken() (string, error) {
+	randomBytes := make([]byte, 32)
+
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(randomBytes), nil
+}
 
 func HashPassword(password string) (string, error) {
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
